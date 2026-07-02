@@ -1,0 +1,43 @@
+2026-07-02 21:24:29,413 - ERROR - No error handlers are registered, logging exception.
+Traceback (most recent call last):
+  File "/data/data/com.termux/files/usr/lib/python3.13/site-packages/telegram/ext/_application.py", line 1315, in process_update
+    await coroutine
+  File "/data/data/com.termux/files/usr/lib/python3.13/site-packages/telegram/ext/_handlers/basehandler.py", line 159, in handle_update
+    return await self.callback(update, context)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/storage/emulated/0/*******private/Accounts/Accounts/bomb.py", line 1365, in button_callback_wrapper
+    await button_callback(query, context)
+  File "/storage/emulated/0/*******private/Accounts/Accounts/bomb.py", line 558, in button_callback
+    user = get_user(db, user_id)
+  File "/storage/emulated/0/*******private/Accounts/Accounts/bomb.py", line 197, in get_user
+    user.last_active = datetime.now(timezone.utc)
+                                    ^^^^^^^^
+NameError: name 'timezone' is not defined
+2026-07-02 21:24:38,479 - ERROR - No error handlers are registered, logging exception.
+Traceback (most recent call last):
+  File "/data/data/com.termux/files/usr/lib/python3.13/site-packages/telegram/ext/_application.py", line 1315, in process_update
+    await coroutine
+  File "/data/data/com.termux/files/usr/lib/python3.13/site-packages/telegram/ext/_handlers/basehandler.py", line 159, in handle_update
+    return await self.callback(update, context)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/storage/emulated/0/*******private/Accounts/Accounts/bomb.py", line 1365, in button_callback_wrapper
+    await button_callback(query, context)
+  File "/storage/emulated/0/*******private/Accounts/Accounts/bomb.py", line 558, in button_callback
+    user = get_user(db, user_id)
+  File "/storage/emulated/0/*******private/Accounts/Accounts/bomb.py", line 197, in get_user
+    user.last_active = datetime.now(timezone.utc)
+                                    ^^^^^^^^
+NameError: name 'timezone' is not defined
+2026-07-02 21:24:39,399 - ERROR - No error handlers are registered, logging exception.
+Traceback (most recent call last):
+  File "/data/data/com.termux/files/usr/lib/python3.13/site-packages/telegram/ext/_application.py", line 1315, in process_update
+    await coroutine
+  File "/data/data/com.termux/files/usr/lib/python3.13/site-packages/telegram/ext/_handlers/basehandler.py", line 159, in handle_update
+    return await self.callback(update, context)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/storage/emulated/0/*******private/Accounts/Accounts/bomb.py", line 1376, in start_cmd
+    user = get_user(db, user_id, update.effective_user.username, update.effective_user.first_name)
+  File "/storage/emulated/0/*******private/Accounts/Accounts/bomb.py", line 197, in get_user
+    user.last_active = datetime.now(timezone.utc)
+                                    ^^^^^^^^
+NameError: name 'timezone' is not defined
