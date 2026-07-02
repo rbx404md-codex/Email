@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-🌧️ Cloud9 MailBomb Bot - COMPLETE CLEAN REWRITE
+🌧️ RBX404 MailBomb Bot - COMPLETE CLEAN REWRITE
 Everything working, validated, optimized
 """
 from datetime import datetime, timedelta, timezone
@@ -13,7 +13,6 @@ import requests
 import smtplib
 import mimetypes
 import re
-from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.image import MIMEImage
@@ -23,7 +22,7 @@ logging.basicConfig(
     level=logging.ERROR,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('cloud9.log'),
+        logging.FileHandler('RBX404.log'),
         logging.StreamHandler()
     ]
 )
@@ -47,7 +46,11 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
 OXAPAY_API_KEY = os.getenv("OXAPAY_MERCHANT_API_KEY", "")
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///cloud9.db")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///RBX404.db")
+
+# Channel & Group for referral verification
+CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME", "").strip()
+GROUP_USERNAME = os.getenv("GROUP_USERNAME", "").strip()
 
 # AWS SES
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "")
@@ -57,7 +60,7 @@ SES_SENDER_EMAIL = os.getenv("SES_SENDER_EMAIL", "")
 USE_SES = os.getenv("USE_SES", "false").lower() == "true"
 
 print("=" * 60)
-print("🌧️ Cloud9 MailBomb Bot")
+print("🌧️ RBX404 MailBomb Bot")
 print("=" * 60)
 
 # SMTP providers
@@ -100,6 +103,19 @@ class User(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     last_active = Column(DateTime, default=datetime.utcnow)
     is_banned = Column(Boolean, default=False)
+    # Referral fields
+    referred_by = Column(Integer, default=None)  # tg_id of referrer
+    referral_count = Column(Integer, default=0)  # how many users this user referred
+    is_verified = Column(Boolean, default=False)  # whether user joined channel & group
+
+class Referral(Base):
+    __tablename__ = "referrals"
+    id = Column(Integer, primary_key=True)
+    referrer_id = Column(Integer, nullable=False, index=True)  # tg_id
+    referred_id = Column(Integer, nullable=False, index=True)  # tg_id
+    status = Column(String, default="pending")  # pending, verified
+    created_at = Column(DateTime, default=datetime.utcnow)
+    verified_at = Column(DateTime)
 
 class SmtpAccount(Base):
     __tablename__ = "smtp_accounts"
@@ -195,6 +211,11 @@ def get_user(db, tg_id, username=None, first_name=None):
         db.commit()
     else:
         user.last_active = datetime.now(timezone.utc)
+        # Update username/first_name if changed
+        if username:
+            user.username = username
+        if first_name:
+            user.first_name = first_name
         db.commit()
     return user
 
@@ -219,8 +240,237 @@ def get_bot_logo():
     finally:
         db.close()
 
+# ========== REFERRAL FUNCTIONS ==========
 
-# ========== SMTP VALIDATION & SENDING ==========
+async def is_user_in_channel_and_group(bot, user_id):
+    """Check if user is member of both channel and group"""
+    if not CHANNEL_USERNAME or not GROUP_USERNAME:
+        # If not configured, treat as verified (skip check)
+        return True
+    
+    try:
+        # Check channel
+        channel_member = await bot.get_chat_member(CHANNEL_USERNAME, user_id)
+        if channel_member.status not in ['member', 'administrator', 'creator']:
+            return False
+    except Exception:
+        return False
+    
+    try:
+        # Check group
+        group_member = await bot.get_chat_member(GROUP_USERNAME, user_id)
+        if group_member.status not in ['member', 'administrator', 'creator']:
+            return False
+    except Exception:
+        return False
+    
+    return True
+
+async def verify_referral(bot, db, referred_id):
+    """Verify a referred user and credit the referrer if both joined"""
+    # Get the referred user
+    referred = db.query(User).filter(User.tg_id == referred_id).first()
+    if not referred or not referred.referred_by:
+        return False
+    
+    # Check if already verified
+    existing = db.query(Referral).filter(
+        Referral.referred_id == referred_id,
+        Referral.status == "verified"
+    ).first()
+    if existing:
+        return False
+    
+    # Check if user is in channel and group
+    if not await is_user_in_channel_and_group(bot, referred_id):
+        return False
+    
+    # Get referrer
+    referrer = db.query(User).filter(User.tg_id == referred.referred_by).first()
+    if not referrer:
+        return False
+    
+    # Update referral record
+    referral = db.query(Referral).filter(
+        Referral.referred_id == referred_id,
+        Referral.status == "pending"
+    ).first()
+    if referral:
+        referral.status = "verified"
+        referral.verified_at = datetime.now(timezone.utc)
+    else:
+        # Create if not exists (shouldn't happen)
+        referral = Referral(
+            referrer_id=referrer.tg_id,
+            referred_id=referred_id,
+            status="verified",
+            verified_at=datetime.now(timezone.utc)
+        )
+        db.add(referral)
+    
+    # Credit referrer with 5 coins
+    referrer.credits += 5
+    referrer.referral_count += 1
+    referred.is_verified = True
+    db.commit()
+    
+    # Notify both users
+    try:
+        await bot.send_message(
+            chat_id=referrer.tg_id,
+            text=f"🎉 **Referral Verified!**\n\nUser `{referred_id}` has joined the channel & group.\nYou received **5 credits**! 💰\n\nNew Balance: **{referrer.credits}**",
+            parse_mode='Markdown'
+        )
+    except:
+        pass
+    
+    try:
+        await bot.send_message(
+            chat_id=referred_id,
+            text=f"✅ **Verification Complete!**\n\nYou have been verified. Your referrer received 5 credits.\n\nThank you for joining! 🎉"
+        )
+    except:
+        pass
+    
+    return True
+
+async def handle_referral_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle /start with referral parameter"""
+    user_id = update.effective_user.id
+    text = update.message.text
+    
+    # Extract referral code if present
+    ref_id = None
+    if text and " " in text:
+        parts = text.split()
+        if len(parts) > 1 and parts[1].startswith("ref_"):
+            try:
+                ref_id = int(parts[1].replace("ref_", ""))
+            except:
+                ref_id = None
+    
+    db = SessionLocal()
+    try:
+        user = get_user(db, user_id, update.effective_user.username, update.effective_user.first_name)
+        
+        # If user was referred and not yet verified
+        if ref_id and ref_id != user_id:
+            # Check if user already has a referrer
+            if user.referred_by is None:
+                # Store referral
+                user.referred_by = ref_id
+                db.commit()
+                
+                # Create referral record
+                referral = Referral(
+                    referrer_id=ref_id,
+                    referred_id=user_id,
+                    status="pending"
+                )
+                db.add(referral)
+                db.commit()
+                
+                # Check if user is already in channel & group (might be already joined)
+                if await is_user_in_channel_and_group(update.get_bot(), user_id):
+                    # Verify immediately
+                    await verify_referral(update.get_bot(), db, user_id)
+                else:
+                    # Send instructions to join
+                    await update.message.reply_text(
+                        f"🔗 **Referral Accepted!**\n\nYou were referred by user `{ref_id}`.\n\n"
+                        f"Please join our **channel** and **group** to verify your referral:\n"
+                        f"📢 Channel: {CHANNEL_USERNAME or 'Not set'}\n"
+                        f"👥 Group: {GROUP_USERNAME or 'Not set'}\n\n"
+                        f"After joining, type `/verify` to claim your referrer's reward.",
+                        parse_mode='Markdown'
+                    )
+            else:
+                await update.message.reply_text(
+                    "ℹ️ You already have a referrer. You cannot be referred again."
+                )
+    
+    finally:
+        db.close()
+
+async def verify_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manually verify referral if user joined channel & group"""
+    user_id = update.effective_user.id
+    db = SessionLocal()
+    try:
+        user = get_user(db, user_id)
+        
+        if not user.referred_by:
+            await update.message.reply_text("ℹ️ You don't have any pending referral.")
+            return
+        
+        # Check if already verified
+        existing = db.query(Referral).filter(
+            Referral.referred_id == user_id,
+            Referral.status == "verified"
+        ).first()
+        if existing:
+            await update.message.reply_text("✅ You are already verified! Your referrer received their reward.")
+            return
+        
+        # Verify
+        success = await verify_referral(update.get_bot(), db, user_id)
+        if success:
+            await update.message.reply_text(
+                "✅ **Verification Successful!**\n\n"
+                "Your referrer has received 5 credits. Thank you for joining!"
+            )
+        else:
+            await update.message.reply_text(
+                "❌ **Verification Failed**\n\n"
+                "Please make sure you have joined both our channel and group, then try again.\n"
+                f"📢 Channel: {CHANNEL_USERNAME or 'Not set'}\n"
+                f"👥 Group: {GROUP_USERNAME or 'Not set'}\n\n"
+                "Type `/verify` again after joining."
+            )
+    finally:
+        db.close()
+
+async def referral_info_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show referral link and stats"""
+    user_id = update.effective_user.id
+    bot_username = (await update.get_bot().get_me()).username
+    
+    db = SessionLocal()
+    try:
+        user = get_user(db, user_id)
+        
+        # Count verified referrals
+        verified_count = db.query(Referral).filter(
+            Referral.referrer_id == user_id,
+            Referral.status == "verified"
+        ).count()
+        
+        referral_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+        
+        text = f"""
+🔗 **Referral System**
+
+Your referral link:
+`{referral_link}`
+
+📊 **Your Stats:**
+- Total Referred: {user.referral_count}
+- Verified Referrals: {verified_count}
+- Credits Earned: {user.referral_count * 5}
+
+💡 **How it works:**
+1. Share your referral link with friends.
+2. When they join via your link, they'll be asked to join our channel & group.
+3. Once they join both, you receive **5 credits** automatically!
+
+📢 Channel: {CHANNEL_USERNAME or 'Not set'}
+👥 Group: {GROUP_USERNAME or 'Not set'}
+"""
+        await update.message.reply_text(text, parse_mode='Markdown')
+    finally:
+        db.close()
+
+# ========== SMTP VALIDATION & SENDING (unchanged) ==========
 
 async def validate_smtp_account(email, password, auth_type="password"):
     """Test SMTP account before adding - returns (success, error_msg)"""
@@ -500,7 +750,7 @@ async def bomb_email(user_tg_id, target, count, subject, message):
         db.close()
 
 
-# ========== BUTTON CALLBACK SYSTEM ==========
+# ========== BUTTON CALLBACK SYSTEM (unchanged) ==========
 
 async def button_callback(query, context):
     """Main button handler - ALL buttons handled here inline"""
@@ -559,7 +809,7 @@ async def button_callback(query, context):
             is_admin = user_id in ADMIN_IDS
             
             text = f"""
-🌧️ **Cloud9 MailBomb Bot**
+🌧️ **RBX404 MailBomb Bot**
 
 💰 Credits: **{user.credits}**
 📧 Sent: **{user.total_emails_sent}**
@@ -572,7 +822,8 @@ async def button_callback(query, context):
                  InlineKeyboardButton("💰 Balance", callback_data="balance")],
                 [InlineKeyboardButton("🎟️ Redeem", callback_data="redeem"),
                  InlineKeyboardButton("📊 History", callback_data="my_history")],
-                [InlineKeyboardButton("❓ Help", callback_data="help")]
+                [InlineKeyboardButton("❓ Help", callback_data="help")],
+                [InlineKeyboardButton("🔗 Referral", callback_data="referral_info")]
             ]
             
             if is_admin:
@@ -687,6 +938,8 @@ Sent: **{user.total_emails_sent}**
 **/bomb** - Start bombing
 **/purchase** - Buy credits
 **/redeem** - Use coupon
+**/referral** - Referral link & stats
+**/verify** - Verify your referral
 
 **How to Bomb:**
 1. Click 💣 Email Bomb
@@ -742,8 +995,13 @@ Sent: **{user.total_emails_sent}**
         await safe_edit("❌ Cancelled!", None)
         return
 
+    # REFERRAL INFO
+    elif data == "referral_info":
+        # Reuse referral_info_cmd logic
+        await referral_info_cmd_from_query(query, context)
+        return
 
-    # ========== ADMIN PANEL ==========
+    # ========== ADMIN PANEL (unchanged) ==========
     
     elif data == "admin":
         if user_id not in ADMIN_IDS:
@@ -925,8 +1183,10 @@ Sent: **{user.total_emails_sent}**
 
 Send TXT file with format:
 ```
+
 email1@gmail.com:password1
 email2@outlook.com:password2
+
 ```
 
 Accounts will be VALIDATED before adding!
@@ -943,8 +1203,10 @@ Accounts will be VALIDATED before adding!
 
 Send TXT file with format:
 ```
+
 email1@gmail.com:app_password1
 email2@outlook.com:app_password2
+
 ```
 
 ⚡ **These are FASTER and more reliable!**
@@ -962,8 +1224,10 @@ Accounts will be VALIDATED before adding!
 
 Send TXT file with format:
 ```
+
 smtp.server.com:587:email@domain.com:password
 smtp.gmail.com:587:test@gmail.com:pass123
+
 ```
 
 Accounts will be VALIDATED before adding!
@@ -1101,9 +1365,11 @@ Total: {results['total']}
 
 Send TXT file with format:
 ```
+
 http://123.45.67.89:8080
 socks5://98.76.54.32:1080
 http://user:pass@proxy.com:8080
+
 ```
 
 Proxies will be VALIDATED before adding!
@@ -1233,7 +1499,7 @@ Proxies will be VALIDATED before adding!
         return
 
 
-    # ========== PURCHASE FLOW ==========
+    # ========== PURCHASE FLOW (unchanged) ==========
     
     elif data.startswith("buy_"):
         package_id = int(data.split("_")[1])
@@ -1365,10 +1631,55 @@ async def button_callback_wrapper(update: Update, context: ContextTypes.DEFAULT_
     await button_callback(query, context)
 
 
+# ========== REFERRAL INFO FROM QUERY ==========
+async def referral_info_cmd_from_query(query, context):
+    """Show referral info from callback query"""
+    user_id = query.from_user.id
+    bot_username = (await context.bot.get_me()).username
+    
+    db = SessionLocal()
+    try:
+        user = get_user(db, user_id)
+        
+        verified_count = db.query(Referral).filter(
+            Referral.referrer_id == user_id,
+            Referral.status == "verified"
+        ).count()
+        
+        referral_link = f"https://t.me/{bot_username}?start=ref_{user_id}"
+        
+        text = f"""
+🔗 **Referral System**
+
+Your referral link:
+`{referral_link}`
+
+📊 **Your Stats:**
+- Total Referred: {user.referral_count}
+- Verified Referrals: {verified_count}
+- Credits Earned: {user.referral_count * 5}
+
+💡 **How it works:**
+1. Share your referral link with friends.
+2. When they join via your link, they'll be asked to join our channel & group.
+3. Once they join both, you receive **5 credits** automatically!
+
+📢 Channel: {CHANNEL_USERNAME or 'Not set'}
+👥 Group: {GROUP_USERNAME or 'Not set'}
+"""
+        await query.edit_message_text(text, parse_mode='Markdown')
+    finally:
+        db.close()
+
+
 # ========== COMMAND HANDLERS ==========
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start command"""
+    """Start command with referral handling"""
+    # Handle referral if present
+    await handle_referral_start(update, context)
+    
+    # Then show main menu
     user_id = update.effective_user.id
     
     db = SessionLocal()
@@ -1377,7 +1688,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_admin = user_id in ADMIN_IDS
         
         text = f"""
-🌧️ **Cloud9 MailBomb Bot**
+🌧️ **RBX404 MailBomb Bot**
 
 💰 Credits: **{user.credits}**
 📧 Sent: **{user.total_emails_sent}**
@@ -1390,7 +1701,8 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("💰 Balance", callback_data="balance")],
             [InlineKeyboardButton("🎟️ Redeem", callback_data="redeem"),
              InlineKeyboardButton("📊 History", callback_data="my_history")],
-            [InlineKeyboardButton("❓ Help", callback_data="help")]
+            [InlineKeyboardButton("❓ Help", callback_data="help")],
+            [InlineKeyboardButton("🔗 Referral", callback_data="referral_info")]
         ]
         
         if is_admin:
@@ -1742,7 +2054,7 @@ New Balance: **{user.credits}**
         await update.message.reply_text("❌ Invalid format!")
 
 
-# ========== MESSAGE HANDLERS ==========
+# ========== MESSAGE HANDLERS (unchanged) ==========
 
 async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle text messages"""
@@ -2092,9 +2404,6 @@ All proxies were VALIDATED!
 
 # ========== MAIN ==========
 
-# Auto payment checker disabled - use /checkpayment command instead
-# To enable automatic checking, uncomment and configure the code below
-
 def run_bot():
     """Run bot"""
     from telegram.request import HTTPXRequest
@@ -2118,6 +2427,8 @@ def run_bot():
     app.add_handler(CommandHandler("createcoupon", createcoupon_cmd))
     app.add_handler(CommandHandler("checkpayment", checkpayment_cmd))
     app.add_handler(CommandHandler("addcredits", addcredits_cmd))
+    app.add_handler(CommandHandler("verify", verify_cmd))
+    app.add_handler(CommandHandler("referral", referral_info_cmd))
     
     # Callback handler
     app.add_handler(CallbackQueryHandler(button_callback_wrapper))
@@ -2127,10 +2438,12 @@ def run_bot():
     app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
     app.add_handler(MessageHandler(filters.Document.ALL, document_handler))
     
-    print("✅ Cloud9 MailBomb Bot Started!")
+    print("✅ RBX404 MailBomb Bot Started!")
     print(f"📧 Admin IDs: {ADMIN_IDS}")
     print(f"💳 OxaPay: {'✅' if OXAPAY_API_KEY else '❌'}")
     print(f"🌐 SES: {'✅' if USE_SES and SES_AVAILABLE else '❌'}")
+    print(f"📢 Channel: {CHANNEL_USERNAME or 'Not set'}")
+    print(f"👥 Group: {GROUP_USERNAME or 'Not set'}")
     print("=" * 60)
     
     app.run_polling()
